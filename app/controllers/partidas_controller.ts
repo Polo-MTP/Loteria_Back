@@ -255,9 +255,26 @@ export default class PartidasController {
         })
       }
 
+      // Obtener las fichas de cada jugador
+      const jugadores = await JugadoresPartida.query()
+        .where('partida_id', params.id)
+        .preload('usuario')
+
+      const usuariosConFichas = jugadores.map(jugador => ({
+        ...jugador.usuario.$attributes,
+        cartas: jugador.cartas,
+        fichas: jugador.fichas
+      }))
+
+      const partidaCompleta = {
+        ...partida.$attributes,
+        anfitrion: partida.anfitrion,
+        usuarios: usuariosConFichas
+      }
+
       return response.json({
         message: 'Partida en curso cargada correctamente',
-        partida,
+        partida: partidaCompleta,
       })
     } catch (error) {
       return response.status(500).json({
@@ -291,6 +308,242 @@ export default class PartidasController {
     } catch (error) {
       return response.status(500).json({
         message: 'Error al obtener la carta',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async sincronizarJugador({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      // Verificar que el jugador esté en la partida
+      const jugadorPartida = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .andWhere('jugador_id', user.id)
+        .first()
+
+      if (!jugadorPartida) {
+        return response.status(404).json({
+          message: 'No estás registrado en esta partida',
+        })
+      }
+
+      // Obtener información actualizada de la partida
+      const partida = await Partida.find(partidaId)
+      if (!partida) {
+        return response.status(404).json({
+          message: 'Partida no encontrada',
+        })
+      }
+
+      return response.json({
+        success: true,
+        partida: {
+          estado: partida.estado,
+          cartaActual: partida.carta_actual,
+          cartasGritadas: partida.cartas_gritadas,
+          ganadorId: partida.ganador_id
+        },
+        jugador: {
+          cartas: jugadorPartida.cartas,
+          fichas: jugadorPartida.fichas
+        }
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al sincronizar datos',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async colocarFicha({ request, response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+      const { posicion } = request.only(['posicion'])
+
+      const jugadorPartida = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .andWhere('jugador_id', user.id)
+        .first()
+
+      if (!jugadorPartida) {
+        return response.status(404).json({
+          message: 'No estás registrado en esta partida',
+        })
+      }
+
+      const partida = await Partida.find(partidaId)
+      if (!partida || partida.estado !== 'en_curso') {
+        return response.status(400).json({
+          message: 'La partida no está en curso',
+        })
+      }
+
+      // Verificar que la posición tenga una carta que haya sido gritada
+      const cartaEnPosicion = jugadorPartida.cartas[posicion]
+      if (!partida.cartas_gritadas.includes(cartaEnPosicion)) {
+        return response.status(400).json({
+          message: 'No puedes colocar ficha en una carta que no ha sido gritada',
+        })
+      }
+
+      // Agregar la ficha si no está ya colocada
+      const fichasActuales = jugadorPartida.fichas || []
+      if (!fichasActuales.includes(posicion)) {
+        fichasActuales.push(posicion)
+        jugadorPartida.fichas = fichasActuales
+        await jugadorPartida.save()
+      }
+
+      return response.json({
+        message: 'Ficha colocada correctamente',
+        fichas: jugadorPartida.fichas,
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al colocar ficha',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async obtenerUltimosDatos({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      const partida = await Partida.query()
+        .where('id', partidaId)
+        .preload('ganador')
+        .first()
+
+      if (!partida) {
+        return response.status(404).json({
+          message: 'Partida no encontrada',
+        })
+      }
+
+      const yaHayGanador = partida.estado === 'finalizado' && partida.ganador_id !== null
+      const tuEresElGanador = yaHayGanador && partida.ganador_id === user.id
+
+      return response.json({
+        success: true,
+        yaHayGanador,
+        ganadorId: partida.ganador_id || 0,
+        tuEresElGanador,
+        ultimaCarta: partida.carta_actual || 0,
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al obtener últimos datos',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async validarCarta({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      const jugadorPartida = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .andWhere('jugador_id', user.id)
+        .first()
+
+      if (!jugadorPartida) {
+        return response.status(404).json({
+          message: 'No estás registrado en esta partida',
+        })
+      }
+
+      const partida = await Partida.find(partidaId)
+      if (!partida) {
+        return response.status(404).json({
+          message: 'Partida no encontrada',
+        })
+      }
+
+      // Verificar si el jugador tiene todas las fichas (16 posiciones)
+      const fichasColocadas = jugadorPartida.fichas || []
+      const esGanador = fichasColocadas.length === 16
+
+      if (esGanador && partida.estado === 'en_curso') {
+        partida.estado = 'finalizado'
+        partida.ganador_id = user.id
+        await partida.save()
+
+        return response.json({
+          ganador: true,
+          message: '¡Felicidades! Has ganado la partida',
+        })
+      }
+
+      return response.json({
+        ganador: false,
+        message: 'Aún no has completado tu cartón',
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al validar carta',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async misPartidas({ response, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+
+      const partidas = await Partida.query()
+        .where('anfitrion_id', user.id)
+        .orWhereHas('usuarios', (query) => {
+          query.where('jugador_id', user.id)
+        })
+        .preload('anfitrion')
+        .orderBy('created_at', 'desc')
+
+      return response.json({
+        message: 'Mis partidas obtenidas exitosamente',
+        partidas,
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al obtener mis partidas',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async salirPartida({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      const partida = await Partida.query()
+        .where('id', partidaId)
+        .where('estado', 'esperando')
+        .first()
+
+      if (!partida) {
+        return response.status(404).json({
+          message: 'Partida no encontrada o ya comenzó',
+        })
+      }
+
+      // Eliminar al jugador de la partida
+      await partida.related('usuarios').detach([user.id])
+
+      return response.json({
+        message: 'Has salido de la partida exitosamente',
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al salir de la partida',
         errors: error.messages || error.message,
       })
     }
