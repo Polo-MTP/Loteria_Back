@@ -224,6 +224,28 @@ export default class PartidasController {
 
       partida.cartas_gritadas = [...cartasGritadas, cartaAleatoria]
       partida.carta_actual = cartaAleatoria
+      
+      // Si se gritaron las 52 cartas, finalizar la partida sin ganador
+      if (partida.cartas_gritadas.length === 52) {
+        partida.estado = 'finalizado'
+        partida.ganador_id = null
+        
+        // Marcar todos los jugadores como eliminados
+        await JugadoresPartida.query()
+          .where('partida_id', params.id)
+          .update({ estado: 'eliminado' })
+          
+        await partida.save()
+
+        return response.json({
+          message: 'Última carta gritada - Partida finalizada sin ganador',
+          carta: cartaAleatoria,
+          partida: partida,
+          partidaFinalizada: true,
+          sinGanador: true
+        })
+      }
+      
       await partida.save()
 
       return response.json({
@@ -263,7 +285,8 @@ export default class PartidasController {
       const usuariosConFichas = jugadores.map(jugador => ({
         ...jugador.usuario.$attributes,
         cartas: jugador.cartas,
-        fichas: jugador.fichas
+        fichas: jugador.fichas,
+        estado: jugador.estado || 'jugando'
       }))
 
       const partidaCompleta = {
@@ -360,6 +383,64 @@ export default class PartidasController {
     }
   }
 
+  async quitarFicha({ request, response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+      const { posicion } = request.only(['posicion'])
+
+      const jugadorPartida = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .andWhere('jugador_id', user.id)
+        .first()
+
+      if (!jugadorPartida) {
+        return response.status(404).json({
+          message: 'No estás registrado en esta partida',
+        })
+      }
+
+      // Verificar que el jugador no esté eliminado
+      if (jugadorPartida.estado === 'eliminado') {
+        return response.status(400).json({
+          message: 'Ya fuiste eliminado de esta partida y no puedes modificar fichas',
+        })
+      }
+
+      const partida = await Partida.find(partidaId)
+      if (!partida || partida.estado !== 'en_curso') {
+        return response.status(400).json({
+          message: 'La partida no está en curso',
+        })
+      }
+
+      // Quitar la ficha si está colocada
+      const fichasActuales = jugadorPartida.fichas || []
+      const nuevasFichas = fichasActuales.filter(ficha => ficha !== posicion)
+      
+      if (nuevasFichas.length !== fichasActuales.length) {
+        jugadorPartida.fichas = nuevasFichas
+        await jugadorPartida.save()
+        
+        return response.json({
+          message: 'Ficha removida correctamente',
+          fichas: jugadorPartida.fichas,
+        })
+      } else {
+        return response.json({
+          message: 'La ficha no estaba colocada',
+          fichas: jugadorPartida.fichas,
+        })
+      }
+
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al quitar ficha',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
   async colocarFicha({ request, response, params, auth }: HttpContext) {
     try {
       const user = await auth.authenticate()
@@ -400,6 +481,45 @@ export default class PartidasController {
         fichasActuales.push(posicion)
         jugadorPartida.fichas = fichasActuales
         await jugadorPartida.save()
+        
+        // Si colocó la ficha 16, automáticamente validar lotería
+        if (fichasActuales.length === 16) {
+          // Verificar que TODAS las cartas del jugador hayan sido gritadas
+          const cartasJugador = jugadorPartida.cartas
+          const cartasGritadas = partida.cartas_gritadas
+          
+          const cartasNoGritadas = cartasJugador.filter(carta => !cartasGritadas.includes(carta))
+          
+          if (cartasNoGritadas.length > 0) {
+            // El jugador perdió - eliminar de la partida
+            jugadorPartida.estado = 'eliminado'
+            await jugadorPartida.save()
+
+            return response.json({
+              message: 'Ficha colocada, pero perdiste la partida',
+              fichas: jugadorPartida.fichas,
+              eliminado: true,
+              ganador: false,
+              detalleEliminacion: `Las siguientes cartas no han sido gritadas: ${cartasNoGritadas.join(', ')}`,
+              cartasNoGritadas
+            })
+          } else {
+            // ¡El jugador ganó!
+            jugadorPartida.estado = 'ganador'
+            await jugadorPartida.save()
+            
+            partida.estado = 'finalizado'
+            partida.ganador_id = user.id
+            await partida.save()
+
+            return response.json({
+              message: '¡Felicidades! ¡LOTERÍA! Has ganado la partida',
+              fichas: jugadorPartida.fichas,
+              eliminado: false,
+              ganador: true
+            })
+          }
+        }
       }
 
       return response.json({
@@ -626,6 +746,130 @@ export default class PartidasController {
     } catch (error) {
       return response.status(500).json({
         message: 'Error al salir de la partida',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async estadisticasPartida({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      const partida = await Partida.query()
+        .where('id', partidaId)
+        .preload('anfitrion')
+        .first()
+
+      if (!partida) {
+        return response.status(404).json({
+          message: 'Partida no encontrada',
+        })
+      }
+
+      // Verificar que el usuario sea participante o anfitrión
+      const jugadorPartida = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .andWhere('jugador_id', user.id)
+        .first()
+
+      const esAnfitrion = partida.anfitrion_id === user.id
+
+      if (!jugadorPartida && !esAnfitrion) {
+        return response.status(403).json({
+          message: 'No tienes permiso para ver estas estadísticas',
+        })
+      }
+
+      // Obtener todos los jugadores con sus estados
+      const todosLosJugadores = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .preload('usuario')
+
+      const estadisticas = {
+        partida: {
+          id: partida.id,
+          nombre: partida.nombre,
+          estado: partida.estado,
+          cartasGritadas: partida.cartas_gritadas.length,
+          totalCartas: 52,
+          cartasRestantes: 52 - partida.cartas_gritadas.length,
+          cartaActual: partida.carta_actual,
+          ganadorId: partida.ganador_id
+        },
+        jugadores: todosLosJugadores.map(jugador => ({
+          id: jugador.usuario.$attributes.id,
+          nombre: jugador.usuario.$attributes.nombre,
+          email: jugador.usuario.$attributes.email,
+          fichasColocadas: jugador.fichas.length,
+          estado: jugador.estado || 'jugando',
+          esGanador: jugador.estado === 'ganador',
+          estaEliminado: jugador.estado === 'eliminado'
+        })),
+        resumen: {
+          jugadoresJugando: todosLosJugadores.filter(j => j.estado === 'jugando').length,
+          jugadoresEliminados: todosLosJugadores.filter(j => j.estado === 'eliminado').length,
+          jugadoresGanadores: todosLosJugadores.filter(j => j.estado === 'ganador').length
+        }
+      }
+
+      return response.json({
+        success: true,
+        estadisticas
+      })
+
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al obtener estadísticas',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async finalizarPartidaSinGanador({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      const partida = await Partida.query()
+        .where('id', partidaId)
+        .preload('anfitrion')
+        .first()
+
+      if (!partida) {
+        return response.status(404).json({
+          message: 'Partida no encontrada',
+        })
+      }
+
+      if (partida.anfitrion.id !== user.id) {
+        return response.status(403).json({
+          message: 'No tienes permiso para finalizar esta partida',
+        })
+      }
+
+      if (partida.estado !== 'en_curso') {
+        return response.status(400).json({
+          message: 'La partida no está en curso',
+        })
+      }
+
+      // Marcar todos los jugadores como eliminados
+      await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .update({ estado: 'eliminado' })
+
+      // Finalizar la partida sin ganador
+      partida.estado = 'finalizado'
+      partida.ganador_id = null
+      await partida.save()
+
+      return response.json({
+        message: 'Partida finalizada sin ganador - Todos pierden',
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al finalizar la partida',
         errors: error.messages || error.message,
       })
     }
