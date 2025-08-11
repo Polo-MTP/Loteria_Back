@@ -149,6 +149,32 @@ curl -X POST http://localhost:3333/juego/1/ficha \
 }
 ```
 
+### Caso 7: Jugador Sale del Juego Voluntariamente
+```bash
+# Salir de una partida en curso (eliminación completa del registro)
+curl -X DELETE http://localhost:3333/partida/1/salir \
+  -H "Authorization: Bearer TOKEN"
+```
+
+**Respuesta Esperada:**
+```json
+{
+  "message": "Has abandonado el juego exitosamente",
+  "abandonoVoluntario": true
+}
+```
+
+### Caso 8: Verificar Lista de Jugadores Después de Salida
+```bash
+# Verificar que el jugador ya no aparece en la lista
+curl -X GET http://localhost:3333/juego/1/estadisticas \
+  -H "Authorization: Bearer TOKEN"
+```
+
+**Resultado Esperado:**
+- El jugador que salió ya no debe aparecer en la lista de jugadores
+- Solo aparecerán los jugadores que aún están en la partida
+
 ## Verificación del Sistema
 
 ### ✅ Validaciones Implementadas

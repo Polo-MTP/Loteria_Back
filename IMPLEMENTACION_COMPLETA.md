@@ -131,6 +131,7 @@ INICIAL: jugando
 - Validación automática al completar cartón
 - Corrección de errores (quitar fichas)
 - Información detallada de estado
+- Salir del juego voluntariamente (eliminación completa del registro)
 - Bloqueo automático si son eliminados
 
 ### ✅ **Para Anfitriones**  

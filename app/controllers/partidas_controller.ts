@@ -728,20 +728,52 @@ export default class PartidasController {
 
       const partida = await Partida.query()
         .where('id', partidaId)
-        .where('estado', 'esperando')
         .first()
 
       if (!partida) {
         return response.status(404).json({
-          message: 'Partida no encontrada o ya comenzó',
+          message: 'Partida no encontrada',
         })
       }
 
-      // Eliminar al jugador de la partida
-      await partida.related('usuarios').detach([user.id])
+      // Si la partida está en espera, eliminar completamente al jugador
+      if (partida.estado === 'esperando') {
+        await partida.related('usuarios').detach([user.id])
+        return response.json({
+          message: 'Has salido de la partida exitosamente',
+        })
+      }
 
-      return response.json({
-        message: 'Has salido de la partida exitosamente',
+      // Si la partida está en curso, eliminar completamente al jugador
+      if (partida.estado === 'en_curso') {
+        const jugadorPartida = await JugadoresPartida.query()
+          .where('partida_id', partidaId)
+          .andWhere('jugador_id', user.id)
+          .first()
+
+        if (!jugadorPartida) {
+          return response.status(404).json({
+            message: 'No estás registrado en esta partida',
+          })
+        }
+
+        // Eliminar completamente al jugador de la partida
+        await JugadoresPartida.query()
+          .where('partida_id', partidaId)
+          .andWhere('jugador_id', user.id)
+          .delete()
+
+        // También eliminar de la relación many-to-many
+        await partida.related('usuarios').detach([user.id])
+
+        return response.json({
+          message: 'Has abandonado el juego exitosamente',
+          abandonoVoluntario: true
+        })
+      }
+
+      return response.status(400).json({
+        message: 'No puedes salir de una partida finalizada',
       })
     } catch (error) {
       return response.status(500).json({
