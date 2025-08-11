@@ -289,6 +289,9 @@ export default class PartidasController {
         estado: jugador.estado || 'jugando'
       }))
 
+      // Verificar si el anfitrión se quedó solo (sin jugadores)
+      const hayJugadores = jugadores.length > 0
+      
       const partidaCompleta = {
         ...partida.$attributes,
         anfitrion: partida.anfitrion,
@@ -296,7 +299,9 @@ export default class PartidasController {
         // Información adicional para el anfitrión
         totalCartasGritadas: partida.cartas_gritadas.length,
         cartasRestantes: 52 - partida.cartas_gritadas.length,
-        cartaActualVisible: partida.carta_actual // Siempre mantener visible la carta actual
+        cartaActualVisible: partida.carta_actual, // Siempre mantener visible la carta actual
+        anfitrionSolo: !hayJugadores, // Flag para indicar si el anfitrión está solo
+        deberiaFinalizarse: !hayJugadores && partida.estado === 'en_curso' // Sugerir finalizar si está solo
       }
 
       return response.json({
@@ -779,7 +784,7 @@ export default class PartidasController {
 
         const totalJugadores = jugadoresRestantes[0].$extras.total
 
-        // Si no quedan jugadores, finalizar la partida
+        // Si no quedan jugadores (solo queda el anfitrión), finalizar la partida
         if (totalJugadores === 0) {
           partida.estado = 'finalizado'
           partida.ganador_id = null
@@ -789,7 +794,8 @@ export default class PartidasController {
             message: 'Has abandonado el juego - Partida finalizada por falta de jugadores',
             abandonoVoluntario: true,
             partidaFinalizada: true,
-            sinGanador: true
+            sinGanador: true,
+            anfitrionSolo: true  // Nuevo flag para que el frontend sepa que el anfitrión está solo
           })
         }
 
@@ -925,6 +931,65 @@ export default class PartidasController {
 
       return response.json({
         message: 'Partida finalizada sin ganador - Todos pierden',
+      })
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al finalizar la partida',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async finalizarPartidaPorAnfitrionSolo({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      const partida = await Partida.query()
+        .where('id', partidaId)
+        .preload('anfitrion')
+        .first()
+
+      if (!partida) {
+        return response.status(404).json({
+          message: 'Partida no encontrada',
+        })
+      }
+
+      if (partida.anfitrion.id !== user.id) {
+        return response.status(403).json({
+          message: 'No tienes permiso para finalizar esta partida',
+        })
+      }
+
+      if (partida.estado !== 'en_curso') {
+        return response.status(400).json({
+          message: 'La partida no está en curso',
+        })
+      }
+
+      // Verificar que realmente no haya jugadores
+      const jugadores = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .count('* as total')
+
+      const totalJugadores = jugadores[0].$extras.total
+
+      if (totalJugadores > 0) {
+        return response.status(400).json({
+          message: 'Aún hay jugadores en la partida. No puedes finalizarla.',
+        })
+      }
+
+      // Finalizar la partida porque el anfitrión está solo
+      partida.estado = 'finalizado'
+      partida.ganador_id = null
+      await partida.save()
+
+      return response.json({
+        message: 'Partida finalizada - Te quedaste sin jugadores',
+        partidaFinalizada: true,
+        motivo: 'anfitrion_solo',
       })
     } catch (error) {
       return response.status(500).json({

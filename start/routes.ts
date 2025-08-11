@@ -35,6 +35,7 @@ router.group(() => {
   router.get('/juego/:id/estadisticas', [PartidaController, 'estadisticasPartida'])
   router.post('/juego/:id/cantar-loteria', [PartidaController, 'cantarLoteria'])
   router.post('/partida/:id/finalizar-sin-ganador', [PartidaController, 'finalizarPartidaSinGanador'])
+  router.post('/partida/:id/finalizar-por-anfitrion-solo', [PartidaController, 'finalizarPartidaPorAnfitrionSolo'])
   router.get('/juego/:id/ganador', [PartidaController, 'obtenerUltimosDatos'])
   router.get('/juego/:id/validar-carta', [PartidaController, 'validarCarta'])
   router.get('/partidas/user', [PartidaController, 'misPartidas'])
