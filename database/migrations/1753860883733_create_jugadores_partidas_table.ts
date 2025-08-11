@@ -10,6 +10,7 @@ export default class extends BaseSchema {
       table.bigInteger('jugador_id').unsigned().references('id').inTable('users').onDelete('CASCADE')
       table.json('cartas').notNullable()
       table.json('fichas').notNullable()
+      table.enum('estado', ['jugando', 'eliminado', 'ganador']).defaultTo('jugando')
       table.timestamp('created_at').nullable()
       table.timestamp('updated_at').nullable()
     })

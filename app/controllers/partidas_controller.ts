@@ -348,7 +348,8 @@ export default class PartidasController {
         },
         jugador: {
           cartas: jugadorPartida.cartas,
-          fichas: jugadorPartida.fichas
+          fichas: jugadorPartida.fichas,
+          estado: jugadorPartida.estado || 'jugando'
         }
       })
     } catch (error) {
@@ -376,6 +377,13 @@ export default class PartidasController {
         })
       }
 
+      // Verificar que el jugador no esté eliminado
+      if (jugadorPartida.estado === 'eliminado') {
+        return response.status(400).json({
+          message: 'Ya fuiste eliminado de esta partida y no puedes colocar más fichas',
+        })
+      }
+
       const partida = await Partida.find(partidaId)
       if (!partida || partida.estado !== 'en_curso') {
         return response.status(400).json({
@@ -383,14 +391,9 @@ export default class PartidasController {
         })
       }
 
-      // Verificar que la posición tenga una carta que haya sido gritada
-      const cartaEnPosicion = jugadorPartida.cartas[posicion]
-      if (!partida.cartas_gritadas.includes(cartaEnPosicion)) {
-        return response.status(400).json({
-          message: 'No puedes colocar ficha en una carta que no ha sido gritada',
-        })
-      }
-
+      // Permitir colocar fichas libremente sin verificar si fueron gritadas
+      // El jugador puede colocar cualquier ficha cuando quiera
+      
       // Agregar la ficha si no está ya colocada
       const fichasActuales = jugadorPartida.fichas || []
       if (!fichasActuales.includes(posicion)) {
@@ -490,6 +493,85 @@ export default class PartidasController {
     } catch (error) {
       return response.status(500).json({
         message: 'Error al validar carta',
+        errors: error.messages || error.message,
+      })
+    }
+  }
+
+  async cantarLoteria({ response, params, auth }: HttpContext) {
+    try {
+      const user = await auth.authenticate()
+      const partidaId = params.id
+
+      const jugadorPartida = await JugadoresPartida.query()
+        .where('partida_id', partidaId)
+        .andWhere('jugador_id', user.id)
+        .first()
+
+      if (!jugadorPartida) {
+        return response.status(404).json({
+          message: 'No estás registrado en esta partida',
+        })
+      }
+
+      // Verificar que el jugador no esté ya eliminado
+      if (jugadorPartida.estado === 'eliminado') {
+        return response.status(400).json({
+          message: 'Ya fuiste eliminado de esta partida',
+        })
+      }
+
+      // Verificar que tenga las 16 fichas colocadas
+      const fichasColocadas = jugadorPartida.fichas || []
+      if (fichasColocadas.length !== 16) {
+        return response.status(400).json({
+          message: 'Debes tener las 16 fichas colocadas para cantar lotería',
+        })
+      }
+
+      const partida = await Partida.find(partidaId)
+      if (!partida || partida.estado !== 'en_curso') {
+        return response.status(400).json({
+          message: 'La partida no está en curso',
+        })
+      }
+
+      // Verificar que TODAS las cartas del jugador hayan sido gritadas
+      const cartasJugador = jugadorPartida.cartas
+      const cartasGritadas = partida.cartas_gritadas
+      
+      const cartasNoGritadas = cartasJugador.filter(carta => !cartasGritadas.includes(carta))
+      
+      if (cartasNoGritadas.length > 0) {
+        // El jugador perdió - eliminar de la partida
+        jugadorPartida.estado = 'eliminado'
+        await jugadorPartida.save()
+
+        return response.json({
+          ganador: false,
+          eliminado: true,
+          message: `¡Perdiste! Las siguientes cartas no han sido gritadas: ${cartasNoGritadas.join(', ')}`,
+          cartasNoGritadas
+        })
+      }
+
+      // ¡El jugador ganó!
+      jugadorPartida.estado = 'ganador'
+      await jugadorPartida.save()
+      
+      partida.estado = 'finalizado'
+      partida.ganador_id = user.id
+      await partida.save()
+
+      return response.json({
+        ganador: true,
+        eliminado: false,
+        message: '¡Felicidades! ¡LOTERÍA! Has ganado la partida',
+      })
+
+    } catch (error) {
+      return response.status(500).json({
+        message: 'Error al cantar lotería',
         errors: error.messages || error.message,
       })
     }

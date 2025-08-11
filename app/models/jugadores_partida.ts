@@ -48,6 +48,9 @@ export default class JugadoresPartida extends BaseModel {
   })
   declare fichas: number[]
 
+  @column()
+  declare estado: 'jugando' | 'eliminado' | 'ganador'
+
   @column.dateTime({ autoCreate: true })
   declare createdAt: DateTime
 
