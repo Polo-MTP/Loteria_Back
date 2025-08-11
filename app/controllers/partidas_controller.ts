@@ -292,7 +292,11 @@ export default class PartidasController {
       const partidaCompleta = {
         ...partida.$attributes,
         anfitrion: partida.anfitrion,
-        usuarios: usuariosConFichas
+        usuarios: usuariosConFichas,
+        // Información adicional para el anfitrión
+        totalCartasGritadas: partida.cartas_gritadas.length,
+        cartasRestantes: 52 - partida.cartas_gritadas.length,
+        cartaActualVisible: partida.carta_actual // Siempre mantener visible la carta actual
       }
 
       return response.json({
@@ -367,6 +371,8 @@ export default class PartidasController {
           estado: partida.estado,
           cartaActual: partida.carta_actual,
           cartasGritadas: partida.cartas_gritadas,
+          totalCartasGritadas: partida.cartas_gritadas.length,
+          cartasRestantes: 52 - partida.cartas_gritadas.length,
           ganadorId: partida.ganador_id
         },
         jugador: {
@@ -766,6 +772,27 @@ export default class PartidasController {
         // También eliminar de la relación many-to-many
         await partida.related('usuarios').detach([user.id])
 
+        // Verificar si quedan jugadores en la partida
+        const jugadoresRestantes = await JugadoresPartida.query()
+          .where('partida_id', partidaId)
+          .count('* as total')
+
+        const totalJugadores = jugadoresRestantes[0].$extras.total
+
+        // Si no quedan jugadores, finalizar la partida
+        if (totalJugadores === 0) {
+          partida.estado = 'finalizado'
+          partida.ganador_id = null
+          await partida.save()
+
+          return response.json({
+            message: 'Has abandonado el juego - Partida finalizada por falta de jugadores',
+            abandonoVoluntario: true,
+            partidaFinalizada: true,
+            sinGanador: true
+          })
+        }
+
         return response.json({
           message: 'Has abandonado el juego exitosamente',
           abandonoVoluntario: true
@@ -906,6 +933,7 @@ export default class PartidasController {
       })
     }
   }
+
 }
 
 function generarCarta(cantidad: number): number[] {
